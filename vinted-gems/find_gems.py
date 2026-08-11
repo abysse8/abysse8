@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Search Vinted for workwear/streetwear in your true size, across all
+measurement systems, and rank the hidden gems.
+
+Usage:
+    python find_gems.py --pants 35x34 --shirt L --max-price 80 \
+        --out report.md --json results.json
+
+Sizes are matched by parsing each listing's size label (W/L inches, FR/EU,
+IT, letter sizes, collar sizes) rather than trusting the platform's size
+filter, so a 35x34 pant also surfaces listings tagged FR 45, IT 51 or "L".
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+
+from client import VintedClient
+from gems import EXCLUDE_TITLE, ScoredItem, score_item, title_contradicts_pants
+from sizing import PantsTarget, ShirtTarget
+
+PANTS_QUERIES = [
+    "carhartt double knee",
+    "carhartt carpenter pant",
+    "carhartt simple pant",
+    "carhartt single knee",
+    "dickies 874",
+    "dickies double knee",
+    "stan ray fatigue pant",
+    "stan ray painter pant",
+    "gramicci pant",
+    "engineered garments fatigue",
+    "orslow pant",
+    "polar big boy",
+    "butter goods pant",
+    "dime baggy pant",
+    "pantalon travail vintage moleskine",
+    "pantalon cargo vintage",
+    "levis 501 W35",
+    "wrangler carpenter",
+]
+
+SHIRT_QUERIES = [
+    "carhartt chemise",
+    "carhartt work shirt",
+    "dickies work shirt",
+    "stussy shirt",
+    "stussy chemise",
+    "wrangler western shirt",
+    "chemise flanelle vintage",
+    "ben davis shirt",
+    "patagonia shirt",
+    "universal works shirt",
+    "engineered garments shirt",
+    "norse projects shirt",
+]
+
+
+def parse_pants(spec: str) -> PantsTarget:
+    try:
+        w, l = spec.lower().replace("*", "x").split("x")
+        return PantsTarget(waist_in=int(w), inseam_in=int(l))
+    except ValueError:
+        sys.exit(f"bad --pants spec {spec!r}, expected e.g. 35x34")
+
+
+def run_queries(client, queries, target, max_price, pages):
+    seen: set[int] = set()
+    gems: list[ScoredItem] = []
+    for q in queries:
+        for page in range(1, pages + 1):
+            try:
+                items = client.search(q, price_to=max_price, page=page)
+            except Exception as e:  # noqa: BLE001 - keep sweeping other queries
+                print(f"  ! {q!r} page {page}: {e}", file=sys.stderr)
+                break
+            for it in items:
+                iid = it.get("id")
+                if not iid or iid in seen:
+                    continue
+                seen.add(iid)
+                if EXCLUDE_TITLE.search(it.get("title") or ""):
+                    continue
+                m = target.match(it.get("size_title") or "")
+                if not m:
+                    continue
+                if isinstance(target, PantsTarget) and title_contradicts_pants(
+                    it, target.waist_in, target.inseam_in
+                ):
+                    continue
+                gems.append(score_item(it, m))
+            if len(items) < 20:  # thin page — no point paging deeper
+                break
+        print(f"  {q!r}: {len(seen)} unique items so far", file=sys.stderr)
+    gems.sort(key=lambda g: g.score, reverse=True)
+    return gems
+
+
+def fmt_md(gems: list[ScoredItem], heading: str, top: int) -> str:
+    lines = [f"## {heading}", "", "| score | item | size | price | why |", "|--:|---|---|--:|---|"]
+    for g in gems[:top]:
+        why = "; ".join(g.reasons[:3])
+        lines.append(
+            f"| {g.score:.0f} | [{g.title[:60]}]({g.url}) | {g.size.token} | {g.price:.0f}€ | {why} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--domain", default="vinted.fr")
+    ap.add_argument("--pants", default="35x34", help="waist x inseam in inches")
+    ap.add_argument("--shirt", default="L")
+    ap.add_argument("--max-price", type=float, default=80)
+    ap.add_argument("--pages", type=int, default=1, help="pages per query")
+    ap.add_argument("--top", type=int, default=20, help="results per section")
+    ap.add_argument("--out", default=None, help="write markdown report here")
+    ap.add_argument("--json", dest="json_out", default=None)
+    args = ap.parse_args()
+
+    client = VintedClient(domain=args.domain)
+    pants_target = parse_pants(args.pants)
+    shirt_target = ShirtTarget(letter=args.shirt.upper())
+
+    print(f"searching pants {args.pants} …", file=sys.stderr)
+    pants = run_queries(client, PANTS_QUERIES, pants_target, args.max_price, args.pages)
+    print(f"searching shirts {args.shirt} …", file=sys.stderr)
+    shirts = run_queries(client, SHIRT_QUERIES, shirt_target, args.max_price, args.pages)
+
+    report = "\n".join(
+        [
+            f"# Vinted gems — pants {args.pants}, tops {args.shirt}",
+            "",
+            f"Sizes matched across systems: W{pants_target.waist_in} = "
+            f"FR {pants_target.fr_size} = IT {pants_target.it_size}; "
+            f"{args.shirt} tops = FR 41/42 = IT 52 = collar 16-16.5\".",
+            "",
+            fmt_md(pants, f"Pants ({len(pants)} size matches)", args.top),
+            fmt_md(shirts, f"Shirts & tops ({len(shirts)} size matches)", args.top),
+        ]
+    )
+
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(report)
+    else:
+        print(report)
+
+    if args.json_out:
+        payload = [
+            {
+                "id": g.item.get("id"),
+                "title": g.title,
+                "url": g.url,
+                "brand": g.brand,
+                "price_eur": g.price,
+                "size_title": g.item.get("size_title"),
+                "size_match": g.size.level.name,
+                "size_note": g.size.note,
+                "score": g.score,
+                "reasons": g.reasons,
+                "favourites": g.item.get("favourite_count"),
+                "condition": g.item.get("status"),
+                "photo": (g.item.get("photos") or [{}])[0].get("url"),
+                "section": "pants" if g in pants else "shirts",
+            }
+            for g in pants + shirts
+        ]
+        with open(args.json_out, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=1)
+
+
+if __name__ == "__main__":
+    main()
