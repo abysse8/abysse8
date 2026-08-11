@@ -202,6 +202,9 @@ class PantsTarget:
 @dataclass
 class ShirtTarget:
     letter: str = "L"
+    # When hunting boxy/oversized fits, one letter size up is a feature,
+    # not a compromise — rank it as a converted equivalent instead of CLOSE.
+    oversize_ok: bool = False
 
     # Conversions for a men's size L top.
     _EXACT_LETTERS = {"L"}
@@ -226,6 +229,8 @@ class ShirtTarget:
         if up in LETTER_SIZES:
             if up in self._EXACT_LETTERS:
                 return SizeMatch(Match.EXACT, tok, "L")
+            if up == "XL" and self.oversize_ok:
+                return SizeMatch(Match.EQUIVALENT, tok, "XL — oversized drape on an L frame")
             if up in self._CLOSE_LETTERS:
                 return SizeMatch(Match.CLOSE, tok, f"{up} — brand may run big/small, check pit-to-pit")
             return SizeMatch(Match.NONE, tok, "letter size off")

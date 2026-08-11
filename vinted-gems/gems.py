@@ -16,7 +16,19 @@ from sizing import Match, SizeMatch
 
 # Items to drop outright: wrong garment or wrong department for this hunt.
 EXCLUDE_TITLE = re.compile(
-    r"\b(shorts?|bermudas?|robe|dress|jupe|skirt|femme|women|débardeur|damen|mujer|enfant|kids)\b",
+    r"\b(shorts?|bermudas?|robe|dress|jupe|skirt|femme|women|débardeur|damen|mujer|enfant|kids"
+    # footwear — EU shoe sizes (41-45) collide with FR shirt sizes, so a
+    # sneaker "EU 42" would otherwise match as a size-L top
+    r"|converse|sneakers?|baskets?|chaussures?|shoes?|schuhe|zapatillas?|trainers?"
+    r"|blazer low|dunk|air force|air presto|presto|air max|jordan|turbodrk|ramones)\b",
+    re.I,
+)
+
+# Lookalike listings: a fast-fashion piece described as "style X" /
+# "inspired X" carries the grail brand in its tag but none of its value.
+LOOKALIKE_TITLE = re.compile(
+    r"\b(zara|h&m|shein|bershka|primark|decathlon|pull\s?&\s?bear"
+    r"|inspired|inspirée?|façon|simile|style)\b",
     re.I,
 )
 
@@ -31,6 +43,27 @@ TITLE_WXL = re.compile(r"\b[wW]?(\d{2})\s*(?:[xX/]|[lL])\s*[lL]?\.?\s*(\d{2})\b"
 # brand (lowercased) -> (tier, typical resale EUR for pants/heavy tops)
 # tier 3 = grail, 2 = core workwear/streetwear, 1 = solid basics
 BRANDS: dict[str, tuple[int, float]] = {
+    # dark / techwear / avant
+    "rick owens": (3, 160),
+    "drkshdw": (3, 120),
+    "y-3": (3, 110),
+    "yohji yamamoto": (3, 140),
+    "julius": (3, 130),
+    "acronym": (3, 300),
+    "1017 alyx 9sm": (3, 120),
+    "alyx": (3, 120),
+    "cav empt": (3, 90),
+    "helmut lang": (3, 90),
+    "issey miyake": (3, 120),
+    "stone island shadow project": (3, 150),
+    "c.p. company": (2, 80),
+    "arc'teryx": (2, 90),
+    "arcteryx": (2, 90),
+    "maharishi": (2, 80),
+    "affix": (2, 60),
+    "oakley": (2, 50),
+    "guerrilla-group": (2, 70),
+    "riot division": (2, 70),
     "engineered garments": (3, 120),
     "orslow": (3, 110),
     "kapital": (3, 150),
@@ -91,6 +124,71 @@ HEAT_KEYWORDS = {
     "active jacket": 3,
 }
 
+DARK_KEYWORDS = {
+    "noir": 3,
+    "black": 3,
+    "nero": 3,
+    "schwarz": 3,
+    "washed black": 4,
+    "faded black": 4,
+    "dark": 2,
+    "anthracite": 2,
+    "charcoal": 2,
+    "shadow": 3,
+    "techwear": 3,
+    "cargo": 2,
+    "nylon": 2,
+    "ripstop": 3,
+    "zip": 1,
+    "strap": 2,
+    "double knee": 2,
+    "duck": 2,
+    "canvas": 2,
+    "denim": 1,
+    "flanelle": 1,
+    "flannel": 1,
+    "moleskine": 2,
+    "heavy": 2,
+    "oversize": 2,
+    "asym": 3,
+}
+
+
+def _luminance(hex_color: str | None) -> float | None:
+    """Perceived luminance 0-255 of a '#rrggbb' string."""
+    if not hex_color or not hex_color.startswith("#") or len(hex_color) != 7:
+        return None
+    try:
+        r, g, b = (int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
+    except ValueError:
+        return None
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def dark_bonus(item: dict) -> tuple[float, str | None]:
+    """Score how visually dark a listing is: -10 .. +15.
+
+    Combines title keywords with the dominant colour Vinted extracts from
+    the main photo, so a shirt that *looks* black ranks above one that
+    merely says so.
+    """
+    title = (item.get("title") or "").lower()
+    kw = sum(pts for k, pts in DARK_KEYWORDS.items() if k in title)
+    kw_pts = min(8.0, float(kw))
+
+    photos = item.get("photos") or []
+    lum = _luminance(photos[0].get("dominant_color") if photos else None)
+    photo_pts, note = 0.0, None
+    if lum is not None:
+        if lum < 55:
+            photo_pts, note = 7.0, "photo reads near-black"
+        elif lum < 100:
+            photo_pts, note = 4.0, "photo reads dark"
+        elif lum > 170:
+            photo_pts, note = -10.0, "photo reads light-coloured"
+    return kw_pts + photo_pts, note
+
+
 CONDITION_BONUS = {
     "Neuf avec étiquette": 4,
     "Neuf sans étiquette": 3,
@@ -133,7 +231,7 @@ def brand_info(item: dict) -> tuple[int, float]:
         return BRANDS[name]
     title = (item.get("title") or "").lower()
     for b, info in BRANDS.items():
-        if b in title:
+        if re.search(rf"\b{re.escape(b)}\b", title):
             return info
     return (0, 25)
 
@@ -149,7 +247,7 @@ def title_contradicts_pants(item: dict, waist_in: int, inseam_in: int) -> bool:
     return abs(w - waist_in) > 1 or abs(l - inseam_in) > 2
 
 
-def score_item(item: dict, size: SizeMatch) -> ScoredItem:
+def score_item(item: dict, size: SizeMatch, dark: bool = False) -> ScoredItem:
     reasons: list[str] = []
 
     # Size fit: 0-30
@@ -168,6 +266,11 @@ def score_item(item: dict, size: SizeMatch) -> ScoredItem:
     title_fold = _fold(item.get("title") or "")
     brand_key = _fold(brand_name.split()[0])[:5] if brand_name else ""
     brand_verified = len(brand_key) >= 3 and brand_key in title_fold
+    if LOOKALIKE_TITLE.search(item.get("title") or ""):
+        tier, typical = 0, 20.0
+        brand_pts = 5
+        reasons.append("lookalike/fast-fashion — not the tagged brand")
+        brand_verified = True  # suppress the separate mistag warning
     if tier and not brand_verified:
         brand_pts *= 0.4
         reasons.append("brand only in tag — verify photos")
@@ -212,5 +315,11 @@ def score_item(item: dict, size: SizeMatch) -> ScoredItem:
     if cond_pts >= 3:
         reasons.append(cond)
 
-    total = size_pts + brand_pts + value_pts + heat_pts + hidden_pts + cond_pts
+    dark_pts = 0.0
+    if dark:
+        dark_pts, dark_note = dark_bonus(item)
+        if dark_note:
+            reasons.append(dark_note)
+
+    total = size_pts + brand_pts + value_pts + heat_pts + hidden_pts + cond_pts + dark_pts
     return ScoredItem(item=item, size=size, score=round(total, 1), reasons=reasons)

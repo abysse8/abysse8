@@ -42,6 +42,38 @@ PANTS_QUERIES = [
     "wrangler carpenter",
 ]
 
+# --style dark: club-ready dark workwear / techwear / avant. Shirts with
+# structure (heavy seams, canvas, denim, flannel) plus dark outer layers.
+DARK_SHIRT_QUERIES = [
+    "chemise noire workwear",
+    "carhartt shirt black",
+    "surchemise noire",
+    "black flannel shirt heavy",
+    "chemise denim noir",
+    "rick owens shirt",
+    "drkshdw",
+    "y-3 shirt",
+    "yohji yamamoto shirt",
+    "helmut lang shirt",
+    "issey miyake shirt homme",
+    "washed black shirt oversize",
+]
+
+DARK_OUTER_QUERIES = [
+    "carhartt detroit jacket black",
+    "carhartt active jacket noir",
+    "chore jacket noir",
+    "veste travail noire moleskine",
+    "nike acg jacket black",
+    "stone island shadow",
+    "veste techwear",
+    "cargo jacket nylon black",
+    "arcteryx jacket black",
+    "maharishi jacket",
+    "cp company overshirt",
+    "acronym",
+]
+
 SHIRT_QUERIES = [
     "carhartt chemise",
     "carhartt work shirt",
@@ -66,7 +98,7 @@ def parse_pants(spec: str) -> PantsTarget:
         sys.exit(f"bad --pants spec {spec!r}, expected e.g. 35x34")
 
 
-def run_queries(client, queries, target, max_price, pages):
+def run_queries(client, queries, target, max_price, pages, dark=False):
     seen: set[int] = set()
     gems: list[ScoredItem] = []
     for q in queries:
@@ -90,7 +122,7 @@ def run_queries(client, queries, target, max_price, pages):
                     it, target.waist_in, target.inseam_in
                 ):
                     continue
-                gems.append(score_item(it, m))
+                gems.append(score_item(it, m, dark=dark))
             if len(items) < 20:  # thin page — no point paging deeper
                 break
         print(f"  {q!r}: {len(seen)} unique items so far", file=sys.stderr)
@@ -111,6 +143,13 @@ def fmt_md(gems: list[ScoredItem], heading: str, top: int) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--style",
+        choices=["classic", "dark"],
+        default="classic",
+        help="classic: workwear x streetwear pants + shirts; "
+        "dark: club-ready dark shirts + outer layers with photo-darkness scoring",
+    )
     ap.add_argument("--domain", default="vinted.fr")
     ap.add_argument("--pants", default="35x34", help="waist x inseam in inches")
     ap.add_argument("--shirt", default="L")
@@ -125,21 +164,41 @@ def main() -> None:
     pants_target = parse_pants(args.pants)
     shirt_target = ShirtTarget(letter=args.shirt.upper())
 
-    print(f"searching pants {args.pants} …", file=sys.stderr)
-    pants = run_queries(client, PANTS_QUERIES, pants_target, args.max_price, args.pages)
-    print(f"searching shirts {args.shirt} …", file=sys.stderr)
-    shirts = run_queries(client, SHIRT_QUERIES, shirt_target, args.max_price, args.pages)
+    if args.style == "dark":
+        shirt_target = ShirtTarget(letter=args.shirt.upper(), oversize_ok=True)
+        print("searching dark shirts …", file=sys.stderr)
+        pants = run_queries(
+            client, DARK_SHIRT_QUERIES, shirt_target, args.max_price, args.pages, dark=True
+        )
+        print("searching dark outer layers …", file=sys.stderr)
+        shirts = run_queries(
+            client, DARK_OUTER_QUERIES, shirt_target, args.max_price, args.pages, dark=True
+        )
+        sections = [
+            fmt_md(pants, f"Rugged dark shirts ({len(pants)} size matches)", args.top),
+            fmt_md(shirts, f"Dark outer layers ({len(shirts)} size matches)", args.top),
+        ]
+        title = f"# Vinted dark gems — tops {args.shirt} (XL surfaced for oversize)"
+    else:
+        print(f"searching pants {args.pants} …", file=sys.stderr)
+        pants = run_queries(client, PANTS_QUERIES, pants_target, args.max_price, args.pages)
+        print(f"searching shirts {args.shirt} …", file=sys.stderr)
+        shirts = run_queries(client, SHIRT_QUERIES, shirt_target, args.max_price, args.pages)
+        sections = [
+            fmt_md(pants, f"Pants ({len(pants)} size matches)", args.top),
+            fmt_md(shirts, f"Shirts & tops ({len(shirts)} size matches)", args.top),
+        ]
+        title = f"# Vinted gems — pants {args.pants}, tops {args.shirt}"
 
     report = "\n".join(
         [
-            f"# Vinted gems — pants {args.pants}, tops {args.shirt}",
+            title,
             "",
             f"Sizes matched across systems: W{pants_target.waist_in} = "
             f"FR {pants_target.fr_size} = IT {pants_target.it_size}; "
             f"{args.shirt} tops = FR 41/42 = IT 52 = collar 16-16.5\".",
             "",
-            fmt_md(pants, f"Pants ({len(pants)} size matches)", args.top),
-            fmt_md(shirts, f"Shirts & tops ({len(shirts)} size matches)", args.top),
+            *sections,
         ]
     )
 
