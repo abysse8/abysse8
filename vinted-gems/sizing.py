@@ -216,6 +216,10 @@ class ShirtTarget:
     _COLLAR_IN_EXACT = {16}   # 16-16.5" collar ~ L
 
     def match(self, size_title: str) -> SizeMatch:
+        # A waist notation anywhere in the label means the item is bottoms
+        # (e.g. "W32 | FR 42") — its FR 42 is a waist size, not a shirt L.
+        if re.search(r"\bW\s*\d{2}\b", size_title or "", re.I):
+            return SizeMatch(Match.NONE, size_title or "", "waist-sized item, not a top")
         best = SizeMatch(Match.NONE, size_title or "", "no size parsed")
         for tok in tokenize(size_title):
             m = self._match_token(tok)

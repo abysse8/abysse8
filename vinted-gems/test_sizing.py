@@ -59,6 +59,12 @@ def test_shirt_converted():
     assert shirt.match("16").level is Match.EQUIVALENT
 
 
+def test_shirt_rejects_bottoms_with_waist_sizes():
+    # "W32 | FR 42" is a pant label; its FR 42 must not read as a shirt L
+    assert not shirt.match("W32 | FR 42")
+    assert not shirt.match("W35 L34")
+
+
 def test_shirt_close_and_reject():
     assert shirt.match("M").level is Match.CLOSE
     assert shirt.match("XL").level is Match.CLOSE

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 
 from client import VintedClient
 from gems import EXCLUDE_TITLE, ScoredItem, score_item, title_contradicts_pants
@@ -98,13 +99,21 @@ def parse_pants(spec: str) -> PantsTarget:
         sys.exit(f"bad --pants spec {spec!r}, expected e.g. 35x34")
 
 
-def run_queries(client, queries, target, max_price, pages, dark=False):
+def uploaded_within(item: dict, hours: float) -> bool:
+    """True when the listing's first photo was uploaded in the last N hours."""
+    photos = item.get("photos") or []
+    ts = ((photos[0].get("high_resolution") or {}).get("timestamp")) if photos else None
+    return bool(ts) and (time.time() - ts) <= hours * 3600
+
+
+def run_queries(client, queries, target, max_price, pages, dark=False, fresh_hours=None):
     seen: set[int] = set()
     gems: list[ScoredItem] = []
+    order = "newest_first" if fresh_hours else "relevance"
     for q in queries:
         for page in range(1, pages + 1):
             try:
-                items = client.search(q, price_to=max_price, page=page)
+                items = client.search(q, price_to=max_price, page=page, order=order)
             except Exception as e:  # noqa: BLE001 - keep sweeping other queries
                 print(f"  ! {q!r} page {page}: {e}", file=sys.stderr)
                 break
@@ -113,6 +122,8 @@ def run_queries(client, queries, target, max_price, pages, dark=False):
                 if not iid or iid in seen:
                     continue
                 seen.add(iid)
+                if fresh_hours and not uploaded_within(it, fresh_hours):
+                    continue
                 if EXCLUDE_TITLE.search(it.get("title") or ""):
                     continue
                 m = target.match(it.get("size_title") or "")
@@ -155,6 +166,12 @@ def main() -> None:
     ap.add_argument("--shirt", default="L")
     ap.add_argument("--max-price", type=float, default=80)
     ap.add_argument("--pages", type=int, default=1, help="pages per query")
+    ap.add_argument(
+        "--fresh-hours",
+        type=float,
+        default=None,
+        help="only listings uploaded in the last N hours (sorts newest first)",
+    )
     ap.add_argument("--top", type=int, default=20, help="results per section")
     ap.add_argument("--out", default=None, help="write markdown report here")
     ap.add_argument("--json", dest="json_out", default=None)
@@ -168,11 +185,13 @@ def main() -> None:
         shirt_target = ShirtTarget(letter=args.shirt.upper(), oversize_ok=True)
         print("searching dark shirts …", file=sys.stderr)
         pants = run_queries(
-            client, DARK_SHIRT_QUERIES, shirt_target, args.max_price, args.pages, dark=True
+            client, DARK_SHIRT_QUERIES, shirt_target, args.max_price, args.pages,
+            dark=True, fresh_hours=args.fresh_hours,
         )
         print("searching dark outer layers …", file=sys.stderr)
         shirts = run_queries(
-            client, DARK_OUTER_QUERIES, shirt_target, args.max_price, args.pages, dark=True
+            client, DARK_OUTER_QUERIES, shirt_target, args.max_price, args.pages,
+            dark=True, fresh_hours=args.fresh_hours,
         )
         sections = [
             fmt_md(pants, f"Rugged dark shirts ({len(pants)} size matches)", args.top),
@@ -181,9 +200,15 @@ def main() -> None:
         title = f"# Vinted dark gems — tops {args.shirt} (XL surfaced for oversize)"
     else:
         print(f"searching pants {args.pants} …", file=sys.stderr)
-        pants = run_queries(client, PANTS_QUERIES, pants_target, args.max_price, args.pages)
+        pants = run_queries(
+            client, PANTS_QUERIES, pants_target, args.max_price, args.pages,
+            fresh_hours=args.fresh_hours,
+        )
         print(f"searching shirts {args.shirt} …", file=sys.stderr)
-        shirts = run_queries(client, SHIRT_QUERIES, shirt_target, args.max_price, args.pages)
+        shirts = run_queries(
+            client, SHIRT_QUERIES, shirt_target, args.max_price, args.pages,
+            fresh_hours=args.fresh_hours,
+        )
         sections = [
             fmt_md(pants, f"Pants ({len(pants)} size matches)", args.top),
             fmt_md(shirts, f"Shirts & tops ({len(shirts)} size matches)", args.top),
