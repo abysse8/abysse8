@@ -19,7 +19,13 @@ import sys
 import time
 
 from client import VintedClient
-from gems import EXCLUDE_TITLE, ScoredItem, score_item, title_contradicts_pants
+from gems import (
+    EXCLUDE_KEEP_TANKS,
+    EXCLUDE_TITLE,
+    ScoredItem,
+    score_item,
+    title_contradicts_pants,
+)
 from sizing import PantsTarget, ShirtTarget
 
 PANTS_QUERIES = [
@@ -135,7 +141,10 @@ def uploaded_within(item: dict, hours: float) -> bool:
     return bool(ts) and (time.time() - ts) <= hours * 3600
 
 
-def run_queries(client, queries, target, max_price, pages, dark=False, fun=False, fresh_hours=None):
+def run_queries(
+    client, queries, target, max_price, pages,
+    dark=False, fun=False, fresh_hours=None, exclude=EXCLUDE_TITLE,
+):
     seen: set[int] = set()
     gems: list[ScoredItem] = []
     order = "newest_first" if fresh_hours else "relevance"
@@ -153,7 +162,7 @@ def run_queries(client, queries, target, max_price, pages, dark=False, fun=False
                 seen.add(iid)
                 if fresh_hours and not uploaded_within(it, fresh_hours):
                     continue
-                if EXCLUDE_TITLE.search(it.get("title") or ""):
+                if exclude.search(it.get("title") or ""):
                     continue
                 m = target.match(it.get("size_title") or "")
                 if not m:
@@ -202,6 +211,18 @@ def main() -> None:
         default=None,
         help="only listings uploaded in the last N hours (sorts newest first)",
     )
+    ap.add_argument(
+        "--query",
+        action="append",
+        default=None,
+        help="custom search query (repeatable); replaces the style's query sets "
+        "and matches against the shirt size target",
+    )
+    ap.add_argument(
+        "--include-tanks",
+        action="store_true",
+        help="keep tank tops / débardeurs (excluded by default)",
+    )
     ap.add_argument("--top", type=int, default=20, help="results per section")
     ap.add_argument("--out", default=None, help="write markdown report here")
     ap.add_argument("--json", dest="json_out", default=None)
@@ -211,7 +232,19 @@ def main() -> None:
     pants_target = parse_pants(args.pants)
     shirt_target = ShirtTarget(letter=args.shirt.upper())
 
-    if args.style == "fun":
+    if args.query:
+        shirt_target = ShirtTarget(letter=args.shirt.upper(), oversize_ok=True)
+        exclude = EXCLUDE_KEEP_TANKS if args.include_tanks else EXCLUDE_TITLE
+        print(f"custom hunt: {args.query} …", file=sys.stderr)
+        pants = run_queries(
+            client, args.query, shirt_target, args.max_price, args.pages,
+            fun=(args.style == "fun"), dark=(args.style == "dark"),
+            fresh_hours=args.fresh_hours, exclude=exclude,
+        )
+        shirts = []
+        sections = [fmt_md(pants, f"Custom hunt ({len(pants)} size matches)", args.top)]
+        title = f"# Vinted custom hunt — tops {args.shirt}"
+    elif args.style == "fun":
         shirt_target = ShirtTarget(letter=args.shirt.upper(), oversize_ok=True)
         print("searching fun tops …", file=sys.stderr)
         pants = run_queries(

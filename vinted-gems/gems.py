@@ -15,16 +15,19 @@ from dataclasses import dataclass
 from sizing import Match, SizeMatch
 
 # Items to drop outright: wrong garment or wrong department for this hunt.
-EXCLUDE_TITLE = re.compile(
-    r"\b(shorts?|bermudas?|robe|dress|jupe|skirt|femme|women|débardeur|damen|mujer|enfant|kids"
+_EXCLUDE_WORDS = (
+    "shorts?|bermudas?|robe|dress|jupe|skirt|femme|women|damen|mujer|enfant|kids"
     # footwear — EU shoe sizes (41-45) collide with FR shirt sizes, so a
     # sneaker "EU 42" would otherwise match as a size-L top
-    r"|converse|sneakers?|baskets?|chaussures?|shoes?|schuhe|zapatillas?|trainers?"
-    r"|blazer low|dunk|air force|air presto|presto|air max|jordan|turbodrk|ramones"
-    # headwear — caps are listed with letter sizes too
-    r"|casquette|cap|hat|bonnet|beanie|troué|troue)\b",
-    re.I,
+    "|converse|sneakers?|baskets?|chaussures?|shoes?|schuhe|zapatillas?|trainers?"
+    "|blazer low|dunk|air force|air presto|presto|air max|jordan|turbodrk|ramones"
+    # headwear — caps are listed with letter sizes too — and damaged items
+    "|casquette|cap|hat|bonnet|beanie|troué|troue"
 )
+# Default also drops tanks (usually women's listings in menswear sweeps);
+# tank-focused hunts should use EXCLUDE_KEEP_TANKS instead.
+EXCLUDE_TITLE = re.compile(rf"\b({_EXCLUDE_WORDS}|débardeur)\b", re.I)
+EXCLUDE_KEEP_TANKS = re.compile(rf"\b({_EXCLUDE_WORDS})\b", re.I)
 
 # Lookalike listings: a fast-fashion piece described as "style X" /
 # "inspired X" carries the grail brand in its tag but none of its value.
