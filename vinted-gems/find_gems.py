@@ -43,6 +43,35 @@ PANTS_QUERIES = [
     "wrangler carpenter",
 ]
 
+# --style fun: colourful streetwear — playful but wearable.
+FUN_TOP_QUERIES = [
+    "stussy shirt",
+    "stussy 8 ball",
+    "stussy hawaiian",
+    "brain dead shirt",
+    "butter goods",
+    "patta t-shirt",
+    "obey shirt vintage",
+    "gramicci shirt",
+    "polar skate co",
+    "dime t-shirt",
+    "palace t-shirt",
+    "carhartt wip s/s shirt",
+    "chemise vintage colorée",
+    "tie dye shirt vintage",
+]
+
+FUN_LAYER_QUERIES = [
+    "nike windbreaker vintage",
+    "veste coach jacket",
+    "stussy jacket",
+    "butter goods jacket",
+    "carhartt wip veste colorée",
+    "patagonia fleece colorful",
+    "polaire vintage colorée",
+    "adidas track jacket vintage",
+]
+
 # --style dark: club-ready dark workwear / techwear / avant. Shirts with
 # structure (heavy seams, canvas, denim, flannel) plus dark outer layers.
 DARK_SHIRT_QUERIES = [
@@ -106,7 +135,7 @@ def uploaded_within(item: dict, hours: float) -> bool:
     return bool(ts) and (time.time() - ts) <= hours * 3600
 
 
-def run_queries(client, queries, target, max_price, pages, dark=False, fresh_hours=None):
+def run_queries(client, queries, target, max_price, pages, dark=False, fun=False, fresh_hours=None):
     seen: set[int] = set()
     gems: list[ScoredItem] = []
     order = "newest_first" if fresh_hours else "relevance"
@@ -133,7 +162,7 @@ def run_queries(client, queries, target, max_price, pages, dark=False, fresh_hou
                     it, target.waist_in, target.inseam_in
                 ):
                     continue
-                gems.append(score_item(it, m, dark=dark))
+                gems.append(score_item(it, m, dark=dark, fun=fun))
             if len(items) < 20:  # thin page — no point paging deeper
                 break
         print(f"  {q!r}: {len(seen)} unique items so far", file=sys.stderr)
@@ -156,10 +185,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--style",
-        choices=["classic", "dark"],
+        choices=["classic", "dark", "fun"],
         default="classic",
         help="classic: workwear x streetwear pants + shirts; "
-        "dark: club-ready dark shirts + outer layers with photo-darkness scoring",
+        "dark: club-ready dark shirts + outer layers with photo-darkness scoring; "
+        "fun: colourful streetwear with photo-vividness scoring",
     )
     ap.add_argument("--domain", default="vinted.fr")
     ap.add_argument("--pants", default="35x34", help="waist x inseam in inches")
@@ -181,7 +211,24 @@ def main() -> None:
     pants_target = parse_pants(args.pants)
     shirt_target = ShirtTarget(letter=args.shirt.upper())
 
-    if args.style == "dark":
+    if args.style == "fun":
+        shirt_target = ShirtTarget(letter=args.shirt.upper(), oversize_ok=True)
+        print("searching fun tops …", file=sys.stderr)
+        pants = run_queries(
+            client, FUN_TOP_QUERIES, shirt_target, args.max_price, args.pages,
+            fun=True, fresh_hours=args.fresh_hours,
+        )
+        print("searching fun layers …", file=sys.stderr)
+        shirts = run_queries(
+            client, FUN_LAYER_QUERIES, shirt_target, args.max_price, args.pages,
+            fun=True, fresh_hours=args.fresh_hours,
+        )
+        sections = [
+            fmt_md(pants, f"Fun tops ({len(pants)} size matches)", args.top),
+            fmt_md(shirts, f"Fun layers ({len(shirts)} size matches)", args.top),
+        ]
+        title = f"# Vinted fun gems — tops {args.shirt} (XL surfaced for oversize)"
+    elif args.style == "dark":
         shirt_target = ShirtTarget(letter=args.shirt.upper(), oversize_ok=True)
         print("searching dark shirts …", file=sys.stderr)
         pants = run_queries(

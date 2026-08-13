@@ -20,7 +20,9 @@ EXCLUDE_TITLE = re.compile(
     # footwear — EU shoe sizes (41-45) collide with FR shirt sizes, so a
     # sneaker "EU 42" would otherwise match as a size-L top
     r"|converse|sneakers?|baskets?|chaussures?|shoes?|schuhe|zapatillas?|trainers?"
-    r"|blazer low|dunk|air force|air presto|presto|air max|jordan|turbodrk|ramones)\b",
+    r"|blazer low|dunk|air force|air presto|presto|air max|jordan|turbodrk|ramones"
+    # headwear — caps are listed with letter sizes too
+    r"|casquette|cap|hat|bonnet|beanie|troué|troue)\b",
     re.I,
 )
 
@@ -43,6 +45,15 @@ TITLE_WXL = re.compile(r"\b[wW]?(\d{2})\s*(?:[xX/]|[lL])\s*[lL]?\.?\s*(\d{2})\b"
 # brand (lowercased) -> (tier, typical resale EUR for pants/heavy tops)
 # tier 3 = grail, 2 = core workwear/streetwear, 1 = solid basics
 BRANDS: dict[str, tuple[int, float]] = {
+    # fun streetwear
+    "brain dead": (2, 60),
+    "patta": (2, 60),
+    "palace": (2, 50),
+    "aries": (2, 60),
+    "supreme": (2, 60),
+    "fucking awesome": (2, 60),
+    "stray rats": (2, 55),
+    "real bad man": (2, 60),
     # dark / techwear / avant
     "rick owens": (3, 160),
     "drkshdw": (3, 120),
@@ -189,6 +200,61 @@ def dark_bonus(item: dict) -> tuple[float, str | None]:
     return kw_pts + photo_pts, note
 
 
+FUN_KEYWORDS = {
+    "tie dye": 3,
+    "tie-dye": 3,
+    "hawaiian": 2,
+    "hawaiienne": 2,
+    "aloha": 2,
+    "paisley": 2,
+    "floral": 2,
+    "print": 1,
+    "graphic": 1,
+    "orange": 2,
+    "vert": 2,
+    "green": 2,
+    "purple": 2,
+    "violet": 2,
+    "jaune": 2,
+    "yellow": 2,
+    "rouge": 2,
+    "red": 2,
+    "rose": 2,
+    "pink": 2,
+    "bleu ciel": 2,
+    "sky blue": 2,
+    "multicolor": 2,
+    "multicolore": 2,
+}
+
+
+def fun_bonus(item: dict) -> tuple[float, str | None]:
+    """Score how colourful a listing is: -8 .. +14. The inverse of
+    dark_bonus — vivid saturated photos rank up, near-black ranks down."""
+    title = (item.get("title") or "").lower()
+    kw_pts = min(6.0, float(sum(p for k, p in FUN_KEYWORDS.items() if k in title)))
+
+    photos = item.get("photos") or []
+    hex_color = photos[0].get("dominant_color") if photos else None
+    photo_pts, note = 0.0, None
+    if hex_color and hex_color.startswith("#") and len(hex_color) == 7:
+        try:
+            r, g, b = (int(hex_color[i : i + 2], 16) / 255 for i in (1, 3, 5))
+        except ValueError:
+            r = g = b = None
+        if r is not None:
+            import colorsys
+
+            _, s, v = colorsys.rgb_to_hsv(r, g, b)
+            if s > 0.35 and v > 0.35:
+                photo_pts, note = 8.0, "photo reads vivid colour"
+            elif s > 0.2 and v > 0.45:
+                photo_pts, note = 4.0, "photo reads coloured"
+            elif v < 0.25:
+                photo_pts, note = -8.0, "photo reads black/near-black"
+    return kw_pts + photo_pts, note
+
+
 CONDITION_BONUS = {
     "Neuf avec étiquette": 4,
     "Neuf sans étiquette": 3,
@@ -247,7 +313,7 @@ def title_contradicts_pants(item: dict, waist_in: int, inseam_in: int) -> bool:
     return abs(w - waist_in) > 1 or abs(l - inseam_in) > 2
 
 
-def score_item(item: dict, size: SizeMatch, dark: bool = False) -> ScoredItem:
+def score_item(item: dict, size: SizeMatch, dark: bool = False, fun: bool = False) -> ScoredItem:
     reasons: list[str] = []
 
     # Size fit: 0-30
@@ -320,6 +386,11 @@ def score_item(item: dict, size: SizeMatch, dark: bool = False) -> ScoredItem:
         dark_pts, dark_note = dark_bonus(item)
         if dark_note:
             reasons.append(dark_note)
+    if fun:
+        fun_pts, fun_note = fun_bonus(item)
+        dark_pts += fun_pts
+        if fun_note:
+            reasons.append(fun_note)
 
     total = size_pts + brand_pts + value_pts + heat_pts + hidden_pts + cond_pts + dark_pts
     return ScoredItem(item=item, size=size, score=round(total, 1), reasons=reasons)
